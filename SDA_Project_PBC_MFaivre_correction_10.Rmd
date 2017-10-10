@@ -1,0 +1,688 @@
+---
+title: "03-PBC_MFaivre_correction"
+output: html_document
+---
+#http://www.uio.no/studier/emner/matnat/math/STK4080/h14/r-trial-project.txt
+
+# Detailed commands to the trial project
+# ======================================
+
+# This only gives the R commands for the trial project. 
+#It is not a draft solution of the project.
+# Some comments on how to write a project report was given at the lectures.
+
+# Read the data into R and attach the survival library
+
+#load libraries
+```{r}
+library(survival)
+library(survivalROC)
+library(asaur)
+library(ggplot2)
+library(glmnet)
+library(MASS)
+```
+
+
+#load ... dataset
+```{r}
+mayoBiliary <- pbc
+head(mayoBiliary)
+names(mayoBiliary)
+summary(mayoBiliary)
+print('str(mayoBiliary)')
+str(mayoBiliary)
+
+NA.hepato <- is.na(mayoBiliary$hepato)
+# print(NA.hepato)
+###dataHouse$bin.medv[is.na(dataHouse$bin.medv)] = nb_levels
+missing.hepato = mayoBiliary$hepato[NA.hepato]
+# print(mayoBiliary$status[NA.hepato]) ##values 0,1 or 2 met
+```
+##Data cleaning: filter out <NA> records
+```{r}
+
+```
+#//////////////////// EXPLORATORY (READ DATA) ////////////////////
+#=====================================================================================
+#=== 1) Exploratory analysis : overall survival curve with right-censored status  ====
+#=====================================================================================
+#=== 1.a) summary
+```{r}
+summary(mayoBiliary)
+
+colnames <-names(mayoBiliary) 
+nb_obs   <-nrow(mayoBiliary)
+nb_vars  <-ncol(mayoBiliary)
+print(nb_vars)
+print(nb_obs)
+```
+#=== 1.b) factor 
+```{r}
+mayoBiliary$sex <- factor(mayoBiliary$sex)
+
+```
+
+
+#//////////////////// MISSING VALUES AND OUTLIERS ////////////////////
+
+#================================================================================================
+#=== 2. Data cleaning : replace missing data by imputation ; detection and filter-out outliers===
+#================================================================================================
+'''
+=== 2.a) address missing values!
+cannot just filter out missing which would result in data-loss
+How can we trt missing data during survival data analysis?
+The cook's distance for each observation i measures the change in Y Y^ (fitted Y) for all observations with and without the presence of observation i, so we know how much the observation i impacted the fitted values.
+http://publish.illinois.edu/spencer-guerrero/2014/12/11/2-dealing-with-missing-data-in-r-omit-approx-or-spline-part-1/
+https://www.r-bloggers.com/imputing-missing-data-with-r-mice-package/
+'''
+
+#////////////// MORE DATA PROCESSING FOR ANALYSIS //////////////////
+#== 2.b STATUS : exclude transplant and as.logical
+```{r}
+# STATUS : exclude transplant from Dataset
+mayoBiliary <- subset(mayoBiliary, status != 1) #exlcude transplant cases
+#####
+mayoBiliary <- transform(mayoBiliary, status = as.logical(status)) ##DO NOT FORGET THIS OR CENSORED DATA 
+#ARE FILTERED OUT !!!!
+```
+#=== 2.c TREATMENT
+# trtMENT : NA-> 0 & filter out 'not randomized'
+```{r}
+mayoBiliary$trt[is.na(mayoBiliary$trt)] = 0   #'not randomized' flag
+mayoBiliary <- subset(mayoBiliary, trt != 0)  #exlcude 'not randomized'
+```
+
+
+#=== . biligroup
+```{r}
+thresholds = quantile(mayoBiliary$bili)
+print('thresholds')
+print(thresholds)
+
+# mayoBiliary$biligroup=cut(cirrhosis$prot,breaks=c(0,49,69,89,150), labels=1:4)
+mayoBiliary$biligroup=cut(mayoBiliary$bili,breaks=thresholds, labels=1:4)
+
+str(mayoBiliary$biligroup)
+```
+
+#=== 2.d stats on missing data
+```{r}
+###install.packages("VIM")
+library(VIM)
+
+# need to address NA values !
+n <- names(mayoBiliary)
+formula1 <- as.formula(paste("time ~", paste(n[!n %in% c("protime","id")], collapse = " + ")))
+mod <- lm(formula1, data=mayoBiliary)
+cooksd <- cooks.distance(mod)
+# print(cooksd)
+
+# Dataset 1 : filter all records with NA rows
+PBC_noNA = na.omit(mayoBiliary)
+# print(dim(PBC_noNA))
+  
+# Dataset 2 : Proceed Imputation with mean value (as a first approx.) per each row
+#Imputing the missing data
+#The mice() function takes care of the imputing process
+###install.packages("mice")
+library(mice)
+temp_NAimput <- mice(mayoBiliary, m=5, maxit=50, meth='pmm', seed=500)
+PBC_NAimput  <- complete(temp_NAimput,1)
+# summary(PBC_NAimput)
+####densityPlot(temp_NAimput)
+  
+# Dataset 3 : apply a row-based spline to replace NA missing values 
+#PBC_NAspline = 
+
+#mayoBiliary = PBC_noNA
+mayoBiliary <- PBC_NAimput
+mean.survtime <- mean(mayoBiliary$time)
+# print(mean.survtime/365.24)
+
+# TIME IN YEARS
+mayoBiliary$time <- mayoBiliary$time/365.24
+
+# summary(mayoBiliary)
+```
+#//////////////////// MORE EXPLORATORY PLOTS ////////////////////
+
+#==================================================
+#=== 2.e scatter plots wr survival time        ===
+#==================================================
+'''
+```{r}
+# 1. STime vs bilirubin
+scatter.smooth(mayoBiliary$bili, mayoBiliary$time)
+
+# 2. STime vs choloresterol
+scatter.smooth(mayoBiliary$chol, mayoBiliary$time)
+
+# 3. STime vs albumin
+scatter.smooth(mayoBiliary$albumin, mayoBiliary$time)
+
+# 4. STime vs copper
+scatter.smooth(mayoBiliary$copper, mayoBiliary$time)
+
+# 5. STime vs platelet
+scatter.smooth(mayoBiliary$platelet, mayoBiliary$time)
+
+# 6. STime vs alk.phos
+scatter.smooth(mayoBiliary$alk.phos, mayoBiliary$time)
+```
+
+#=== 2.f Log-linearity of the numeric covariates Beta(t) per covariate in he model Cox has been checked along the way using splines 
+# [both for the unvariate and mulivariate Cox models (the latter commands not given here)]
+
+# We also need to check for proportional hazards:
+# We find an interaction between trtment and ascites, and between sex and age.
+# To ease the interpretation of the interaction between sex and the numeric covariate age, it is useful
+# to center age by subtracting 60 years (which is close to the mean age) 
+```{r}
+mayoBiliary$cage10=(mayoBiliary$age-60)/10
+cox.final=coxph(Surv(time,status)~trt+sex+ascites+cage10+bili+trt:ascites+sex:cage10, data=mayoBiliary)
+print('summary(cox.final)')
+summary(cox.final)
+
+cox.test=cox.zph(cox.final,transform='log')
+print(cox.test)
+par(mfrow=c(2,2))
+plot(cox.test)
+```
+
+
+#3. plot overall KME survival curve with censored data indicated
+#===============================================================
+```{r}
+plot(survfit(Surv(time, status) ~ 1, data=mayoBiliary), main='Overall KME survival time')
+
+```
+
+#/////////////////// UNVARIATE KAPLAN-MEIER & NELSON-AALEN ////////////////
+
+#4. NON-PARAMETRIC METHOD UNIVARIATE
+#==========================================================
+
+# 4.a Simple univariate analyses for one covariate at a time
+#==========================================================
+ 
+# Treatment
+# ---------
+# Nelson-Aalen and Kaplan-Meier plots stratified:
+```{r}
+par(mfrow=c(1,2))
+fit.trt.naa=coxph(Surv(time,status)~strata(trt),data=mayoBiliary)
+surv.trt.naa=survfit(fit.trt.naa)
+
+plot(surv.trt.naa,fun="cumhaz", mark.time=T , col=1:3,lty=1:3, 
+     xlab="Years since randomization",ylab="Cumulative hazard", main="Treatment")
+legend("topleft",legend=c("D-penicill","Placebo"),col=1:3,lty=1:3)
+
+fit.trt.km=survfit(Surv(time,status)~trt,data=mayoBiliary, conf.type="plain")
+
+plot(fit.trt.km, mark.time=T, col=1:3, lty=1:3, 
+     xlab="Years since randomization", ylab="Survival",main="Treatment")
+legend("bottomleft",legend=c("D-penicill","Placebo"),col=1:3,lty=1:3)
+
+# Estimates of five years survival probabilities with "plain" confidence intervals 
+# (alternatively we could have used the option "log-log")
+print('summary(fit.trt.km,time=5)')
+summary(fit.trt.km,time=5) 
+
+# Estimates of median survival time 
+print('fit.trt.km')
+print(fit.trt.km)
+#
+# Alternatively, we may obtain the quartiles by the command: 
+print('quantile(fit.trt.km)')
+quantile(fit.trt.km)
+
+# Log-rank test:
+print('survdiff(Surv(time,status)~trt,data=mayoBiliary)')
+survdiff(Surv(time,status)~trt,data=mayoBiliary)
+```
+
+# Sex
+# ---
+
+# Nelson-Aalen and Kaplan-Meier plots stratified:
+```{r}
+par(mfrow=c(1,2))
+fit.sex.naa=coxph(Surv(time,status)~strata(sex),data=mayoBiliary)
+surv.sex.naa=survfit(fit.sex.naa)
+plot(surv.sex.naa,fun="cumhaz", mark.time=T ,col=1:2, lty=1:2, 
+     xlab="Years since randomization",ylab="Cumulative hazard", main="Sex")
+legend("topleft",legend=c("Male","Female"), col=1:2, lty=1:2)
+fit.sex.km=survfit(Surv(time,status)~sex,data=mayoBiliary, conf.type="plain")
+plot(fit.sex.km, mark.time=T, col=1:2, lty=1:2, 
+    xlab="Years since randomization", ylab="Survival",main="Sex")
+legend("topright",legend=c("Male","Female"), col=1:2,lty=1:2)
+
+# plot with error bars
+
+
+# Estimates of five years survival probabilities with "plain" confidence intervals 
+print('summary(fit.sex.km,time=5)')
+summary(fit.sex.km,time=5) 
+
+# Estimates of median survival time 
+print('fit.sex.km')
+print(fit.sex.km)
+
+# Log-rank test:
+print('survdiff(Surv(time,status)~sex,data=mayoBiliary)')
+survdiff(Surv(time,status)~sex,data=mayoBiliary)
+```
+
+# Ascites
+# -------
+```{r}
+# Nelson-Aalen and Kaplan-Meier plots:
+par(mfrow=c(1,2))
+fit.asc.naa=coxph(Surv(time,status)~strata(ascites),data=mayoBiliary)
+surv.asc.naa=survfit(fit.asc.naa)
+plot(surv.asc.naa,fun="cumhaz", mark.time=T ,lty=1:3, 
+     xlab="Years since randomization",ylab="Cumulative hazard", main="Ascites")
+legend("topleft",legend=c("None","Slight","Marked"),lty=1:3)
+fit.asc.km=survfit(Surv(time,status)~ascites,data=mayoBiliary, conf.type="plain")
+plot(fit.asc.km, mark.time=T, lty=1:3, 
+     xlab="Years since randomization", ylab="Survival",main="Ascites")
+legend("topright",legend=c("None","Slight","Marked"),lty=1:3)
+
+# Estimates of five years survival probabilities with "plain" confidence intervals 
+print('summary(fit.asc.km,time=5)')
+summary(fit.asc.km,time=5) 
+
+# Estimates of median survival time 
+print('fit.asc.km')
+print(fit.asc.km)
+
+# Log-rank test:
+print('survdiff(Surv(time,status)~ascites,data=mayoBiliary)')
+survdiff(Surv(time,status)~ascites,data=mayoBiliary)
+```
+
+
+# Age
+# ---
+```{r}
+# First we create a categorical variable for age group:
+mayoBiliary$agegroup=cut(mayoBiliary$age,breaks=c(0,49,59,69,100), labels=1:4)
+
+# Nelson-Aalen and Kaplan-Meier plots:
+par(mfrow=c(1,2))
+fit.age.naa=coxph(Surv(time,status)~strata(agegroup),data=mayoBiliary)
+surv.age.naa=survfit(fit.age.naa)
+plot(surv.age.naa,fun="cumhaz", mark.time=F ,lty=1:4, 
+     xlab="Years since randomization",ylab="Cumulative hazard", main="Age")
+legend("topleft",legend=c("Below 50","50-59","60-69","70 and above"),lty=1:4)
+#
+fit.age.km=survfit(Surv(time,status)~agegroup,data=mayoBiliary, conf.type="plain")
+plot(fit.age.km, mark.time=F, lty=1:4, 
+     xlab="Years since randomization", ylab="Survival",main="Age")
+legend("bottomleft",legend=c("Below 50","50-59","60-69","70 and above"),lty=1:4)
+
+# Estimates of five years survival probabilities with "plain" confidence intervals 
+summary(fit.age.km,time=5) 
+
+# Estimates of median survival time 
+print(fit.age.km)
+
+# Log-rank test:
+survdiff(Surv(time,status)~agegroup,data=mayoBiliary)
+```
+# Edema categorical univariate
+# -------
+```{r}
+# Nelson-Aalen and Kaplan-Meier plots:
+par(mfrow=c(1,2))
+fit.edema.naa=coxph(Surv(time,status)~strata(edema),data=mayoBiliary)
+surv.edema.naa=survfit(fit.asc.naa)
+
+plot(surv.edema.naa,fun="cumhaz", mark.time=T ,lty=1:3, 
+     xlab="Years since randomization",ylab="Cumulative hazard", main="Edema")
+legend("topleft",legend=c("No edema","untreated or success","edema"),lty=1:3)
+fit.edema.km=survfit(Surv(time,status) ~ edema,data=mayoBiliary, conf.type="plain")
+
+plot(fit.edema.km, mark.time=T, lty=1:3, 
+     xlab="Years since randomization", ylab="Survival",main="Edema")
+legend("topright",legend=c("No edema","untreated or success","edema"),lty=1:3)
+
+# Estimates of five years survival probabilities with "plain" confidence intervals 
+summary(fit.edema.km,time=5) 
+
+# Estimates of median survival time 
+print(fit.edema.km)
+
+# Log-rank test:
+survdiff(Surv(time,status)~edema,data=mayoBiliary)
+```
+#hepato
+# -------
+```{r}
+# Nelson-Aalen and Kaplan-Meier plots:
+par(mfrow=c(1,2))
+fit.hepato.naa=coxph(Surv(time,status)~strata(hepato),data=mayoBiliary)
+surv.hepato.naa=survfit(fit.asc.naa)
+plot(surv.hepato.naa,fun="cumhaz", mark.time=T ,lty=1:2, 
+     xlab="Years since randomization",ylab="Cumulative hazard", main="hepato")
+legend("topleft",legend=c("No hepato","hepato"),lty=1:2)
+fit.hepato.km=survfit(Surv(time,status) ~ hepato,data=mayoBiliary, conf.type="plain")
+plot(fit.hepato.km, mark.time=T, lty=1:2, 
+     xlab="Years since randomization", ylab="Survival",main="hepato")
+legend("topright",legend=c("No hepato","hepato"),lty=1:2)
+
+# Estimates of five years survival probabilities with "plain" confidence intervals 
+summary(fit.hepato.km,time=5) 
+
+# Estimates of median survival time 
+print(fit.hepato.km)
+
+# Log-rank test:
+survdiff(Surv(time,status)~hepato,data=mayoBiliary)
+```
+
+
+
+#////////////////////// UNIVARIATE COX-REGRESSION ///////////////
+
+# 5. Univariate Cox regressions
+# =============================
+
+# treatment 
+# ---------
+```{r}
+cox.trt=coxph(Surv(time,status)~trt,data=mayoBiliary)
+print("summary(cox.trt)")
+summary(cox.trt)
+pred.trt = survfit(cox.trt, data=mayoBiliary, type="aalen")
+```
+
+
+# Sex 
+# ---
+```{r}
+cox.sex=coxph(Surv(time,status)~sex,data=mayoBiliary)
+print('summary(cox.sex)')
+summary(cox.sex)
+
+pred.sex = survfit(cox.sex, data=mayoBiliary, type="aalen")
+
+par(mfrow=c(1,2))
+plot(pred.trt, col=1:2, fun = "cloglog")
+title(main="PH Testing for covariates treatment",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+
+plot(pred.sex, col=1:2, fun = "cloglog")
+title(main="PH Testing for covariates sex",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+```
+
+#Ascites:
+# -------
+```{r}
+cox.asc=coxph(Surv(time,status)~ascites,data=mayoBiliary)
+print('summary(cox.asc)')
+summary(cox.asc)
+```
+
+# Age
+# ---
+```{r}
+# For the numeric covariates age and prothrombin index, we need to decide how thay should be coded  
+# (as given on the data file, or suitably transformed, or grouped).
+
+# To see how age should be coded, we fit a model using a spline for age:
+cox.psage=coxph(Surv(time,status)~pspline(age),data=mayoBiliary)
+print('cox.psage')
+print(cox.psage)
+par(mfrow=c(1,1))
+termplot(cox.psage,se=T)
+
+# Both the plot (from the templot-command) and the test (from the print-command) show that 
+# it is reasonable to assume a log-linear effect of age
+
+# We will therefore fit a Cox model using age as a numeric covariate.
+# It may be sensible to report the effect of age per 10 years, so we define a new covariate 
+# where age is given per 10 years and fit a Cox model with this covariate
+mayoBiliary$age10= mayoBiliary$age/10
+cox.age10=coxph(Surv(time,status)~age10,data=mayoBiliary)
+print('cox.age10')
+summary(cox.age10)
+```
+
+#6. KME PH univariate
+#====================
+
+#=== 6.a Plotting the CUMULATIVE HAZARD figures for Gender
+```{r}
+fit.KM.sex <- survfit(Surv(time, status) ~ factor(sex), data=mayoBiliary)
+plot(fit.KM.sex$time, log(-log(fit.KM.sex$surv)), col=1:2, type="s",xlab ="Time(year)", ylab = "log-log S(t)", main = "Proportional hazard testing for Gender", lwd=1.4)
+legend("bottomright", col = 1:2, lty = 1:2, legend = c("m","f"),bty="n")
+```
+
+#7. ROC "low-risk, high-risk" for 312 formal study participants from the matching 'mayo' dataset
+#===============================================================================================
+312 formal study participants in common with mayoBiliary dataset (+106 eligible nonenrolled subjects)
+```{r}
+library(survival)
+library(survivalROC)
+
+data(mayo)
+##plot(survfit(Surv(time/365.25, censor) ~ 1, data=mayo))
+
+print(str(mayo))
+str(mayo)
+
+ROC.4 = survivalROC(Stime = mayo$time,
+                status= mayo$censor,
+                marker= mayo$mayoscore4,
+                predict.time = 365.25*5,
+                method="KM")
+
+ROC.5 = survivalROC(Stime = mayo$time,
+                status= mayo$censor,
+                marker= mayo$mayoscore5,
+                predict.time = 365.25*5,
+                method="KM")
+
+'list from 2 models'
+ROC = list(mayo4 = ROC.4, mayo5 = ROC.5)
+
+cutoff = with(ROC$mayo5, min(cut.values[FP<=0.1]))
+
+mayo$prediction = ifelse(mayo$mayoscore5 <= cutoff, "low_risk","high_risk")
+
+'compare 2 groups : low_risk vs high_risk'
+'Predict Survival Time taking into account censoring wr covariate=binary prediction{"high_risk","low_risk"}'
+fit.KM = survfit(Surv(time/365.24,censor)~prediction, data=mayo)
+
+plot(fit.KM,col=1:2,mark.time=T,lty=1:2, 
+     xlab="Years since randomization", ylab="Survival",main="Risk level")
+legend("bottomleft",legend=c("High-risk","Low-risk"),col=1:2,lty=1:2)
+
+'+ show censored data!'
+'mayo$prediction = sapply(ROC, AUC)'
+```
+
+
+#////////////// MUTLI-VARIATE COX REGRESSION /////////////
+
+#6. Multivariate Cox-PH
+#======================
+# c. Multivariate Cox regression
+# ==============================
+```{r}
+# We then fit a Cox model with all the covariates 
+# cox.all=coxph(Surv(time,status)~trt+sex+ascites+age10+bili, data=mayoBiliary)
+cox.all=coxph(Surv(time,status)~trt+sex+ascites+age10+biligroup, data=mayoBiliary)
+summary(cox.all)
+```
+# In principle it may be the case that the coding of a numeric covariate that is appropriate 
+# for a univariate analysis, is not appropriate for a multivariate analysis and vice versa. 
+# But this does not seem to be the case here (commands not shown)
+
+# We then check for first order interactions between any pair of two covariates
+#         ---------------------------------------------------------------------       
+
+# treatment and sex:
+```{r}
+cox.trt.sex=coxph(Surv(time,status)~trt+sex+ascites+age10+ biligroup+trt:sex, data=mayoBiliary)
+anova(cox.all,cox.trt.sex)
+summary(cox.trt.sex)
+
+pred.trt.sex = survfit(cox.trt.sex, data=mayoBiliary, type="aalen")
+
+plot(pred.trt.sex, col=1:2)
+title(main="PH Testing for covariates treat&sex",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+
+plot(pred.trt.sex, col=1:2, fun = "cloglog")
+title(main="PH Testing for covariates treat&sex cloglog",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+```
+
+# treatment and ascitesites:
+```{r}
+cox.trt.ascites=coxph(Surv(time,status)~trt+sex+ascites+age10+ biligroup+trt:ascites, data=mayoBiliary)
+anova(cox.all,cox.trt.ascites)
+summary(cox.trt.ascites)
+
+pred.trt.asc = survfit(cox.trt.ascites, data=mayoBiliary, type="aalen")
+```
+# treatment and age:
+```{r}
+cox.trt.age=coxph(Surv(time,status)~trt+sex+ascites+age10+ biligroup+trt:age10, data=mayoBiliary)
+anova(cox.all,cox.trt.age)
+pred.trt.age = survfit(cox.trt.age, data=mayoBiliary, type="aalen")
+summary(cox.trt.age)
+
+par(mfrow=c(1,2))
+plot(pred.trt.age, col=1:2)
+title(main="PH Testing for covariates treat&age",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+
+plot(pred.trt.asc, col=1:2)
+title(main="PH Testing for covariates treat&ascites",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+
+par(mfrow=c(1,2))
+plot(pred.trt.age, col=1:2, fun = "cloglog")
+title(main="PH Testing for covariates treat&age cloglog",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+
+plot(pred.trt.asc, col=1:2, fun = "cloglog")
+title(main="PH Testing for covariates treat&ascites cloglog",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+```
+
+# Sex and ascites:
+```{r}
+cox.sex.ascites=coxph(Surv(time,status)~trt+sex+ascites+age10+ biligroup+sex:ascites, data=mayoBiliary)
+anova(cox.all,cox.sex.ascites)
+pred.sex.asc = survfit(cox.sex.ascites, data=mayoBiliary, type="aalen")
+summary(cox.sex.ascites)
+```
+
+# Sex and age:
+```{r}
+cox.sex.age=coxph(Surv(time,status)~trt+sex+ascites+age10+biligroup+sex:age10, data=mayoBiliary)
+anova(cox.all,cox.sex.age)
+pred.sex.age = survfit(cox.sex.age, data=mayoBiliary, type="aalen")
+summary(cox.sex.age)
+
+par(mfrow=c(1,2))
+plot(pred.sex.age, col=1:2, fun = "cloglog")
+title(main="PH Testing for covariates gender&age",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+
+plot(pred.sex.asc, col=1:2, fun = "cloglog")
+title(main="PH Testing for covariates gender&ascites",cex.main=0.8,xlab="Time(year)",ylab="S(t)")
+
+# Plot the baseline survival function of this Cox PH model
+install.packages("survminer")
+library("survminer")
+ggsurvplot(survfit(cox.sex.age), color = "#2E9FDF",
+ ggtheme = theme_minimal(), title="Baseline survival function of Cox PH model:Surv(time,status)~trt+sex+ascites+age10+bili+sex:age10")
+```
+
+# Sex and bilirubin:
+```{r}
+cox.sex.bili=coxph(Surv(time,status)~trt+sex+ascites+age10+biligroup+sex:biligroup, data=mayoBiliary)
+anova(cox.all,cox.sex.bili)
+summary(cox.sex.bili)
+```
+# ascitesites and age:
+```{r}
+cox.ascites.age=coxph(Surv(time,status)~trt+sex+ascites+age10+bili+ascites:age10, data=mayoBiliary)
+anova(cox.all,cox.ascites.age)
+summary(cox.ascites.age)
+```
+# Ascites and prothrombin:
+# For checking interaction between ascites and prothrombin group, we need to merge the two highest 
+# prothrombin groups (since there is only one person with severe ascites in the highest prothrombin group)
+# We find an interaction between treatment and ascites, and between sex and age.
+# To ease the interpretation of the interaction between sex and the numeric covariate age, it is useful  
+# center age by subtracting 60 years (which is close to the mean age) 
+```{r}
+mayoBiliary$cage10=(mayoBiliary$age-60)/10
+cox.final=coxph(Surv(time,status)~trt+sex+ascites+cage10+biligroup+trt:ascites+sex:cage10, data=mayoBiliary)
+summary(cox.final)
+```
+
+# Log-linearity of the numeric covariates has been checked along the way using splines 
+# [both for the unvariate and mulivariate Cox models (the latter commands not given here)]
+
+# We also need to check for proportional hazards:
+```{r}
+cox.test=cox.zph(cox.final,transform='log')
+print(cox.test)
+par(mfrow=c(2,2))
+plot(cox.test)
+```
+
+
+
+#/////////// MACHINE LEARNING : RANDOM FOREST ///////////
+
+#7. Random Forest with radomforestSRC package
+#============================================
+
+#for this part, we add the rm function to clean our memory because we don't 
+#need the latest objects to continue our study
+```{r}
+rm(list = ls())
+##install.packages("ggRandomForests")
+library("ggRandomForests")
+#library("ggplot2")
+library("dplyr")
+data(pbc, package="randomForestSRC")
+head(pbc[is.na(pbc$treatment),], n = 50)
+
+#Please consider a more traditional train/test split, only with the 312 complete data:
+pbc2 <- pbc[!is.na(pbc$treatment), ]
+
+smp_size <- floor(0.70 * nrow(pbc2))
+
+## set the seed to make your partition reproductible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(pbc2)), size = smp_size)
+
+pbc.train <- pbc2[train_ind, ]
+pbc.test  <- pbc2[-train_ind, ]
+nrow(pbc.train)
+## [1] 218
+nrow(pbc.test)
+## [1] 94
+##build model
+rfsrc_pbc <- rfsrc(Surv(days, status) ~ .,
+                   data = pbc.train)
+##plot the random survival forest
+ggRFsrc <- plot(gg_rfsrc(rfsrc_pbc), alpha = 0.2) +
+#scale_color_manual(values = strCol) +
+theme(legend.position = "none") +
+labs(y = "Survival Probability", x = "Time (Months)") +
+coord_cartesian(ylim = c(-0.01, 1.01))
+ggRFsrc
+```
+
+##test model - test data contains un-censored data
+```{r}
+test.pred.rfsrc <- predict(rfsrc_pbc, pbc.test,
+na.action="na.impute") #added this so I get results for all test rows
+#summary of our test model
+summary(test.pred.rfsrc)
+```
+
